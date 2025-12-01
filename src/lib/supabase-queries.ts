@@ -463,6 +463,7 @@ export async function createCampaign(data: {
   let query = supabase
     .from('leads')
     .select('id', { count: 'exact', head: true })
+    .in('user_id', [data.user_id, 'default_user'])
     .eq('segment', data.segment);
 
   if (contactFilter.type === 'skip_days' && contactFilter.days > 0) {
@@ -478,7 +479,41 @@ export async function createCampaign(data: {
     console.error('Error counting eligible leads:', countError);
   }
 
-  const eligibleCount = count || 0;
+  let eligibleCount = count || 0;
+
+  // If groups selected, apply AND logic (lead must be in ALL groups)
+  if (data.selectedGroups && data.selectedGroups.length > 0) {
+    // Fetch group names from IDs
+    const { data: groups, error: groupsError } = await supabase
+      .from('user_whatsapp_groups')
+      .select('id, group_name')
+      .in('id', data.selectedGroups);
+
+    if (!groupsError && groups) {
+      const selectedGroupNames = groups.map(g => g.group_name);
+
+      // Fetch leads with their groups
+      const { data: leadsData, error: leadsError } = await supabase
+        .from('leads')
+        .select('id, positive_signal_groups')
+        .in('user_id', [data.user_id, 'default_user'])
+        .eq('segment', data.segment);
+
+      if (!leadsError && leadsData) {
+        // Filter client-side: lead must contain ALL selected groups (AND logic)
+        const filteredLeads = leadsData.filter(lead => {
+          const leadGroups = lead.positive_signal_groups || [];
+
+          // Check if lead has ALL selected groups
+          return selectedGroupNames.every(groupName =>
+            leadGroups.includes(groupName)
+          );
+        });
+
+        eligibleCount = filteredLeads.length;
+      }
+    }
+  }
 
   const { error: updateError } = await supabase
     .from('campaigns')
@@ -700,10 +735,10 @@ export interface WhatsAppGroup {
 }
 
 export async function getWhatsAppGroups(userId: string): Promise<WhatsAppGroup[]> {
-  const { data, error } = await supabase
+  const { data, error} = await supabase
     .from('user_whatsapp_groups')
     .select('*')
-    .eq('user_id', userId)
+    .in('user_id', [userId, 'default_user'])
     .order('created_at', { ascending: true });
 
   if (error) {
@@ -857,7 +892,7 @@ export async function getEngagementRules(userId: string): Promise<EngagementRule
   const { data, error } = await supabase
     .from('engagement_rules')
     .select('*')
-    .eq('user_id', userId)
+    .in('user_id', [userId, 'default_user'])
     .order('created_at', { ascending: true });
 
   if (error) {
@@ -1080,7 +1115,7 @@ export async function getLeads(params: LeadsQueryParams): Promise<LeadsQueryResu
     `,
       { count: 'exact' }
     )
-    .eq('user_id', userId);
+    .in('user_id', [userId, 'default_user']);
 
   if (searchTerm) {
     const phoneDigits = searchTerm.replace(/\D/g, '');
